@@ -10,6 +10,7 @@ import gradio
 import numpy as np
 import torch
 import trimesh
+from scipy.spatial.transform import Rotation
 
 import matplotlib.pyplot as pl
 from dust3r.inference import inference, inference_mv
@@ -49,15 +50,120 @@ def get_reconstructed_scene(model, device, silent, image_size, filelist, min_con
         imgs[3], imgs[change_id] = deepcopy(imgs[change_id]), deepcopy(imgs[3])
     
     output = inference_mv(imgs, model, device, verbose=not silent)
-    input('press enter to continue')
+    # input('press enter to continue')
 
     # print(output['pred1']['rgb'].shape, imgs[0]['img'].shape, 'aha')
     output['pred1']['rgb'] = imgs[0]['img'].permute(0,2,3,1)
     for x, img in zip(output['pred2s'], imgs[1:]):
         x['rgb'] = img['img'].permute(0,2,3,1)
 
+    outdir = "data_test/out_dir"
+
+    cam2world = get_3D_model_from_scene(outdir, silent, output, min_conf_thr, as_pointcloud, transparent_cams, cam_size)
+
     print("Hello!, done running")
 
+def _convert_scene_output_to_glb(outdir, imgs, pts3d, mask, focals, cams2world, cam_size=0.05,
+                                 cam_color=None, as_pointcloud=False,
+                                 transparent_cams=False, silent=False):
+    assert len(pts3d) == len(mask) <= len(imgs) <= len(cams2world) == len(focals)
+    pts3d = to_numpy(pts3d)
+    imgs = to_numpy(imgs)
+    focals = to_numpy(focals)
+    cams2world = to_numpy(cams2world)
+
+    scene = trimesh.Scene()
+
+    # full pointcloud
+    if as_pointcloud:
+        pts = np.concatenate([p[m] for p, m in zip(pts3d, mask)])
+        col = np.concatenate([p[m] for p, m in zip(imgs, mask)])
+        pct = trimesh.PointCloud(pts.reshape(-1, 3), colors=col.reshape(-1, 3))
+        scene.add_geometry(pct)
+    else:
+        meshes = []
+        for i in range(len(imgs)):
+            meshes.append(pts3d_to_trimesh(imgs[i], pts3d[i], mask[i]))
+        mesh = trimesh.Trimesh(**cat_meshes(meshes))
+        scene.add_geometry(mesh)
+
+    # add each camera
+    for i, pose_c2w in enumerate(cams2world):
+        if isinstance(cam_color, list):
+            camera_edge_color = cam_color[i]
+        else:
+            camera_edge_color = cam_color or CAM_COLORS[i % len(CAM_COLORS)]
+        add_scene_cam(scene, pose_c2w, camera_edge_color,
+                      None if transparent_cams else imgs[i], focals[i],
+                      imsize=imgs[i].shape[1::-1], screen_width=cam_size)
+
+    rot = np.eye(4)
+    rot[:3, :3] = Rotation.from_euler('y', np.deg2rad(180)).as_matrix()
+    scene.apply_transform(np.linalg.inv(cams2world[0] @ OPENGL @ rot))
+    outfile = os.path.join(outdir, 'scene.glb')
+    if not silent:
+        print('(exporting 3D scene to', outfile, ')')
+    scene.export(file_obj=outfile)
+    return outfile
+
+def get_3D_model_from_scene(outdir, silent, output, min_conf_thr=3, as_pointcloud=False, transparent_cams=False, cam_size=0.05, only_model=False):
+    """
+    extract 3D_model (glb file) from a reconstructed scene
+    """
+
+    with torch.no_grad():
+        
+        _, h, w = output['pred1']['rgb'].shape[0:3] # [1, H, W, 3]
+        rgbimg = [output['pred1']['rgb'][0]] + [x['rgb'][0] for x in output['pred2s']]
+        for i in range(len(rgbimg)):
+            rgbimg[i] = (rgbimg[i] + 1) / 2
+        pts3d = [output['pred1']['pts3d'][0]] + [x['pts3d_in_other_view'][0] for x in output['pred2s']]
+        conf = torch.stack([output['pred1']['conf'][0]] + [x['conf'][0] for x in output['pred2s']], 0) # [N, H, W]
+        conf_sorted = conf.reshape(-1).sort()[0]
+        conf_thres = conf_sorted[int(conf_sorted.shape[0] * float(min_conf_thr) * 0.01)]
+        msk = conf >= conf_thres
+        
+        # calculate focus:
+
+        conf_first = conf[0].reshape(-1) # [bs, H * W]
+        conf_sorted = conf_first.sort()[0] # [bs, h * w]
+        conf_thres = conf_sorted[int(conf_first.shape[0] * 0.03)]
+        valid_first = (conf_first >= conf_thres) # & valids[0].reshape(bs, -1)
+        valid_first = valid_first.reshape(h, w)
+
+        focals = estimate_focal_knowing_depth(pts3d[0][None].cuda(), valid_first[None].cuda()).cpu().item()
+
+        intrinsics = torch.eye(3,)
+        intrinsics[0, 0] = focals
+        intrinsics[1, 1] = focals
+        intrinsics[0, 2] = w / 2
+        intrinsics[1, 2] = h / 2
+        intrinsics = intrinsics.cuda()
+
+        focals = torch.Tensor([focals]).reshape(1,).repeat(len(rgbimg))
+
+        
+        y_coords, x_coords = torch.meshgrid(torch.arange(h), torch.arange(w), indexing='ij')
+        pixel_coords = torch.stack([x_coords, y_coords], dim=-1).float().cuda() # [H, W, 2]
+        
+        c2ws = []
+        for (pr_pt, valid) in zip(pts3d, msk):
+            c2ws_i = calibrate_camera_pnpransac(pr_pt.cuda().flatten(0,1)[None], pixel_coords.flatten(0,1)[None], valid.cuda().flatten(0,1)[None], intrinsics[None])
+            c2ws.append(c2ws_i[0])
+
+        cams2world = torch.stack(c2ws, dim=0).cpu() # [N, 4, 4]
+        focals = to_numpy(focals)
+
+        pts3d = to_numpy(pts3d)
+        msk = to_numpy(msk)
+
+    glb_file = _convert_scene_output_to_glb(outdir, rgbimg, pts3d, msk, focals, cams2world, as_pointcloud=as_pointcloud, transparent_cams=transparent_cams, cam_size=cam_size, silent=silent)
+    conf = to_numpy([x[0] for x in conf.split(1, dim=0)])
+    rgbimg = to_numpy(rgbimg)
+    # if only_model:
+    #     return glb_file
+    # return glb_file, rgbimg, conf, cams2world 
+    return cams2world
 
 if __name__ == "__main__":
 
@@ -92,7 +198,7 @@ if __name__ == "__main__":
         model=model,
         device=device,
         silent=False,
-        image_size=(224, 224), # This should (224, 224) always. 
+        image_size=224,  # This should 224 always.
         filelist=filelist,  # Replace with your image paths
         min_conf_thr=0.5,
         as_pointcloud=False,
@@ -100,3 +206,5 @@ if __name__ == "__main__":
         cam_size=0.05,
         n_frame=2
     )
+
+
