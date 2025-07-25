@@ -21,6 +21,8 @@ from dust3r.utils.device import to_numpy
 from dust3r.utils.image import load_images, rgb
 from dust3r.viz import add_scene_cam, CAM_COLORS, cat_meshes, OPENGL, pts3d_to_trimesh
 
+from gsplat.rendering import rasterization
+
 inf = np.inf
 
 def get_reconstructed_scene(model, device, silent, image_size, filelist, min_conf_thr,
@@ -59,10 +61,53 @@ def get_reconstructed_scene(model, device, silent, image_size, filelist, min_con
 
     outdir = "data_test/out_dir"
 
-    cam2world = get_3D_model_from_scene(outdir, silent, output, min_conf_thr, as_pointcloud, transparent_cams, cam_size)
+    output = get_3D_model_from_scene(outdir, silent, output, min_conf_thr, as_pointcloud, transparent_cams, cam_size)
 
     print("Hello!, done running")
+       
+    means = torch.stack(output['means'], 0).reshape(-1, 3).cuda()
+    quats = torch.stack(output['quats'], 0).reshape(-1, 4).cuda()
+    scales = torch.stack(output['scales'], 0).reshape(-1, 3).cuda()
+    opacities = torch.stack(output['opacities'], 0).reshape(-1).cuda()
+    colors = torch.stack(output['colors'], 0).flatten(0, -2).cuda()
 
+    sh_base = colors.shape[-1] // 3
+    colors = colors.reshape(-1, sh_base, 3)
+
+    viewmats = output["viewmats"].cuda()
+    intrinsics = output['intrinsics'].cuda()
+    intrinsics = intrinsics.repeat(viewmats.shape[0], 1, 1)  # Repeat intrinsics for each camera
+
+    n_cam = viewmats.shape[0]
+    
+    width = 640
+    height = 480
+    znear = 0.1
+    zfar = 1000.0
+    bg_color = torch.ones((1, 3)).repeat(n_cam, 1).to(device)  # Background color for rasterization
+    eps2d = 0.3
+    sh_base = colors.shape[-1]//3
+    sh_degree = int(np.sqrt(sh_base)) - 1
+    
+    out_img, out_alpha, _ = rasterization(
+        means=means, 
+        quats=quats, 
+        scales=scales, 
+        opacities=opacities,
+        colors=colors,
+        viewmats=viewmats,
+        Ks=intrinsics,
+        width=width,
+        height=height,
+        near_plane=znear,
+        far_plane=zfar,
+        backgrounds=bg_color,
+        sh_degree=sh_degree,
+        eps2d=eps2d,
+    )
+
+    print("finished rasterization")
+    
 def _convert_scene_output_to_glb(outdir, imgs, pts3d, mask, focals, cams2world, cam_size=0.05,
                                  cam_color=None, as_pointcloud=False,
                                  transparent_cams=False, silent=False):
@@ -160,10 +205,27 @@ def get_3D_model_from_scene(outdir, silent, output, min_conf_thr=3, as_pointclou
     glb_file = _convert_scene_output_to_glb(outdir, rgbimg, pts3d, msk, focals, cams2world, as_pointcloud=as_pointcloud, transparent_cams=transparent_cams, cam_size=cam_size, silent=silent)
     conf = to_numpy([x[0] for x in conf.split(1, dim=0)])
     rgbimg = to_numpy(rgbimg)
+
+    means = [output['pred1']['pts3d'][0]] + [x['pts3d_in_other_view'][0] for x in output['pred2s']]
+    quats = [output['pred1']['rotation'][0]] + [x['rotation'][0] for x in output['pred2s']]
+    scales = [output['pred1']['scale'][0]] + [x['scale'][0] for x in output['pred2s']]
+    opacities = [output['pred1']['opacity'][0]] + [x['opacity'][0] for x in output['pred2s']]
+    colors = [output['pred1']['rgb'][0]] + [x['rgb'][0] for x in output['pred2s']]
+
+    output = {}
+    output['means'] = means
+    output['quats'] = quats
+    output['scales'] = scales
+    output['opacities'] = opacities
+    output['colors'] = colors
+    output['viewmats'] = cams2world
+    output['intrinsics'] = intrinsics   
+
     # if only_model:
     #     return glb_file
     # return glb_file, rgbimg, conf, cams2world 
-    return cams2world
+
+    return output
 
 if __name__ == "__main__":
 

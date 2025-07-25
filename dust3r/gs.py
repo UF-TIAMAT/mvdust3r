@@ -132,6 +132,18 @@ class GaussianRenderer(nn.Module):
 
 def gs_render(gts, preds, dp_id_gt, dp_id_pred, c2w_canonical, normalize = False, rot = True, gt_img = False, gt_pcd = False):
 
+
+    # NOTE
+    # means=xyz - pts3d else preds[0]["pts3d"]
+    # quats=rotation - rot_gs
+    # scales=scale - scale_gs
+    # opacities=opacity - opacity_gs
+    # colors=rgb - imgs - else imgs
+    # viewmats=extr - w2c2 
+    # Ks = camera intrinsics ?? "camera_intrinsics"
+    # sh-degre sh_base = rgb.shape[1], sh_degree = int(np.sqrt(sh_base)) - 1
+
+
     # gt1, gt2s, pred1, pred2s = gts[0], gts[1:], preds[0], preds[1:]
     # gt_pts1, gt_pts2s, pr_pts1, pr_pts2s, c2ws = torch.load('/home/zgtang/others.pt')
     # c2ws = torch.stack([c2w[dp_id] for c2w in c2ws], 0).cuda()
