@@ -32,6 +32,7 @@ def get_reconstructed_scene(model, device, silent, image_size, filelist, min_con
     from a list of images, run dust3r inference, global aligner.
     then run get_3D_model_from_scene
     """
+
     imgs = load_images(filelist, size=image_size, verbose=not silent, n_frame = n_frame)
     if len(imgs) == 1:
         imgs = [imgs[0], copy.deepcopy(imgs[0])]
@@ -60,11 +61,7 @@ def get_reconstructed_scene(model, device, silent, image_size, filelist, min_con
     for x, img in zip(output['pred2s'], imgs[1:]):
         x['rgb'] = img['img'].permute(0,2,3,1)
 
-    outdir = "data_test/out_dir"
-
     output = get_3D_model_from_scene(outdir, silent, output, min_conf_thr, as_pointcloud, transparent_cams, cam_size)
-
-    print("Hello!, done running")
        
     means = torch.stack(output['means'], 0).reshape(-1, 3).cuda()
     quats = torch.stack(output['quats'], 0).reshape(-1, 4).cuda()
@@ -328,3 +325,35 @@ if __name__ == "__main__":
     )
 
 
+def estimate_similarity_transformation(source: np.ndarray, target: np.ndarray) -> np.ndarray:
+    """
+    Estimate similarity transformation (rotation, scale, translation) from source to target (such as the Sim3 group).
+    """
+    k, n = source.shape
+
+    mx = source.mean(axis=1)
+    my = target.mean(axis=1)
+    source_centered = source - np.tile(mx, (n, 1)).T
+    target_centered = target - np.tile(my, (n, 1)).T
+
+    sx = np.mean(np.sum(source_centered**2, axis=0))
+    sy = np.mean(np.sum(target_centered**2, axis=0))
+
+    Sxy = (target_centered @ source_centered.T) / n
+
+    U, D, Vt = np.linalg.svd(Sxy, full_matrices=True, compute_uv=True)
+    V = Vt.T
+    rank = np.linalg.matrix_rank(Sxy)
+    if rank < k:
+        raise ValueError("Failed to estimate similarity transformation")
+
+    S = np.eye(k)
+    if np.linalg.det(Sxy) < 0:
+        S[k - 1, k - 1] = -1
+
+    R = U @ S @ V.T
+
+    s = np.trace(np.diag(D) @ S) / sx
+    t = my - s * (R @ mx)
+
+    return R, s, t
