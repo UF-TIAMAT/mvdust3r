@@ -11,6 +11,7 @@ import numpy as np
 import torch
 import trimesh
 from scipy.spatial.transform import Rotation
+import open3d as o3d
 
 import matplotlib.pyplot as pl
 from dust3r.inference import inference, inference_mv
@@ -89,24 +90,24 @@ def get_reconstructed_scene(model, device, silent, image_size, filelist, min_con
     sh_base = colors.shape[-1]//3
     sh_degree = int(np.sqrt(sh_base)) - 1
     
-    out_img, out_alpha, _ = rasterization(
-        means=means, 
-        quats=quats, 
-        scales=scales, 
-        opacities=opacities,
-        colors=colors,
-        viewmats=viewmats,
-        Ks=intrinsics,
-        width=width,
-        height=height,
-        near_plane=znear,
-        far_plane=zfar,
-        backgrounds=bg_color,
-        sh_degree=sh_degree,
-        eps2d=eps2d,
-    )
+    # out_img, out_alpha, _ = rasterization(
+    #     means=means, 
+    #     quats=quats, 
+    #     scales=scales, 
+    #     opacities=opacities,
+    #     colors=colors,
+    #     viewmats=viewmats,
+    #     Ks=intrinsics,
+    #     width=width,
+    #     height=height,
+    #     near_plane=znear,
+    #     far_plane=zfar,
+    #     backgrounds=bg_color,
+    #     sh_degree=sh_degree,
+    #     eps2d=eps2d,
+    # )
 
-    print("finished rasterization")
+    # print("finished rasterization")
     
 def _convert_scene_output_to_glb(outdir, imgs, pts3d, mask, focals, cams2world, cam_size=0.05,
                                  cam_color=None, as_pointcloud=False,
@@ -132,6 +133,84 @@ def _convert_scene_output_to_glb(outdir, imgs, pts3d, mask, focals, cams2world, 
         mesh = trimesh.Trimesh(**cat_meshes(meshes))
         scene.add_geometry(mesh)
 
+
+# meshes = []
+#         for i in range(len(imgs)):
+#             meshes.append(pts3d_to_trimesh(imgs[i], pts3d[i], mask[i]))
+
+# a = cat_meshes(meshes)
+
+    material = o3d.visualization.rendering.MaterialRecord()
+    material.shader = "defaultUnlit"  # or "defaultLit"
+    material.base_color = [1.0, 1.0, 1.0, 1.0]  # White base color
+    material.point_size = 3.0
+
+    # Create the mesh
+    meshes = []
+    for i in range(len(imgs)):
+        meshes.append(pts3d_to_trimesh(imgs[i], pts3d[i], mask[i]))
+    mesh_properties = cat_meshes(meshes)
+
+    faces_3 = np.zeros_like(mesh_properties['faces'])
+    vertices_3 = np.zeros((len(mesh_properties['faces']) * 3, 3), dtype=np.float32)
+
+    for index_face, face in enumerate(mesh_properties['faces']):
+        index_vertex = index_face * 3
+        vertices_3[index_vertex] = mesh_properties['vertices'][face[0]]
+        vertices_3[index_vertex + 1] = mesh_properties['vertices'][face[1]]
+        vertices_3[index_vertex + 2] = mesh_properties['vertices'][face[2]]
+        faces_3[index_face] = np.arange(index_vertex, index_vertex + 3)
+
+    mesh = o3d.geometry.TriangleMesh()
+    mesh.vertices = o3d.utility.Vector3dVector(vertices_3)
+    mesh.triangles = o3d.utility.Vector3iVector(faces_3)
+
+    colors = np.repeat(mesh_properties['face_colors'], 3, axis=0)
+
+    mesh.vertex_colors = o3d.utility.Vector3dVector(colors)
+
+    # Create the mesh
+    # mesh = o3d.geometry.TriangleMesh()
+    # mesh.vertices = o3d.utility.Vector3dVector(a["vertices"])
+    # mesh.triangles = o3d.utility.Vector3iVector(a["faces"])
+
+
+    # # Define Point Cloud
+    # pcd = o3d.geometry.PointCloud()
+    # pcd.points = o3d.utility.Vector3dVector(pts)
+    # pcd.colors = o3d.utility.Vector3dVector(col)
+
+    material = o3d.visualization.rendering.MaterialRecord()
+    material.shader = "defaultUnlit"  # or "defaultLit"
+    material.base_color = [1.0, 1.0, 1.0, 1.0]  # White base color
+
+    # Dummy point
+    renderer = o3d.visualization.rendering.OffscreenRenderer(800, 600)
+    # renderer.scene.add_geometry("pointcloud", pcd, o3d.visualization.rendering.MaterialRecord())
+    renderer.scene.add_geometry("mesh", mesh, material)
+    camera = renderer.scene.camera
+    camera.set_projection(field_of_view=79.0, aspect_ratio=800/600, near_plane=0.01, far_plane=1000.0, field_of_view_type=camera.FovType.Horizontal)
+
+    camera.look_at(
+        center=[0, 0, 0],    # look at origin
+        eye=[-1, 0, -1],       # camera position
+        up=[0, 1, 0]         # up vector
+    )    
+
+    image = renderer.render_to_image()
+    o3d.io.write_image("rendered_image_mesh_new.png", image)
+
+
+for i in range(-5, 5):
+    for j in range(-5, 5):
+        camera.look_at(
+        center=[0, 0, 0],    # look at origin
+        eye=[i, 0, j],       # camera position
+        up=[0, 1, 0]         # up vector
+    )    
+        image = renderer.render_to_image()
+        o3d.io.write_image(f"rendering_results/mesh_results/rendered_image_mesh_new_{i}_{j}.png", image)
+    
     # add each camera
     for i, pose_c2w in enumerate(cams2world):
         if isinstance(cam_color, list):
@@ -141,6 +220,10 @@ def _convert_scene_output_to_glb(outdir, imgs, pts3d, mask, focals, cams2world, 
         add_scene_cam(scene, pose_c2w, camera_edge_color,
                       None if transparent_cams else imgs[i], focals[i],
                       imsize=imgs[i].shape[1::-1], screen_width=cam_size)
+
+# pcd = o3d.geometry.PointCloud()
+# pcd.points = o3d.utility.Vector3dVector(pts)
+# pcd.colors = o3d.utility.Vector3dVector(colours)
 
     rot = np.eye(4)
     rot[:3, :3] = Rotation.from_euler('y', np.deg2rad(180)).as_matrix()
@@ -256,6 +339,8 @@ if __name__ == "__main__":
     # NOTE: filelist to debug
     filelist = ["data_test/path_images/00000.png", "data_test/path_images/00001.png", "data_test/path_images/00002.png"]  # Replace with your image paths
 
+    print("Reached the end")
+
     get_reconstructed_scene(
         model=model,
         device=device,
@@ -263,7 +348,7 @@ if __name__ == "__main__":
         image_size=224,  # This should 224 always.
         filelist=filelist,  # Replace with your image paths
         min_conf_thr=0.5,
-        as_pointcloud=False,
+        as_pointcloud=True,
         transparent_cams=True,
         cam_size=0.05,
         n_frame=2

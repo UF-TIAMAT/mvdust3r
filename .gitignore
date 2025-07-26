@@ -2,3 +2,13 @@ data_test
 *.png
 *.pyc
 *.pth
+
+*.pyc
+core.python-*
+*.zip
+*.so
+.ninja*
+*.ninja
+*.o
+*.ply
+*.bz2
