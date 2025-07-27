@@ -59,12 +59,23 @@ def get_reconstructed_scene(model, device, silent, image_size, filelist, min_con
     renderer, cams2world = get_rendering_from_scene(mvdust3r_output, min_conf_thr=min_conf_thr)
 
 
-    rot = np.eye(4)
-    rot[:3, :3] = Rotation.from_euler('y', np.deg2rad(180)).as_matrix()
-    camera_matrix = np.linalg.inv(cams2world[0] @ OPENGL @ rot)
+    for i, cam in enumerate(cams2world):
+        rot = np.eye(4)
+        rot[:3, :3] = Rotation.from_euler('y', np.deg2rad(180)).as_matrix()
+        camera_matrix = np.linalg.inv(cams2world[i] @ OPENGL @ rot)
 
+        position = camera_matrix[:3, 3]
+        forward = camera_matrix[:3, 2]
+        up = camera_matrix[:3, 1]
+        lookat = position + forward
 
-
+        renderer.scene.camera.look_at(
+            center=lookat,    # look at origin
+            eye=position,       # camera position
+            up=up              # up vector
+            )    
+        image = renderer.render_to_image()
+        o3d.io.write_image(f"rendering_results/mesh_results/cam_{i}_hori_rendered_image_mesh_newx_finally_fu.png", image)
 
     print()
 
@@ -162,7 +173,7 @@ def get_rendering_from_scene(output, min_conf_thr=3):
         renderer = o3d.visualization.rendering.OffscreenRenderer(640, 480)
         renderer.scene.add_geometry("mesh", mesh, material)
         camera = renderer.scene.camera
-        camera.set_projection(field_of_view=79.0, aspect_ratio=640/480, near_plane=0.01, far_plane=1000.0, field_of_view_type=camera.FovType.Vertical)
+        camera.set_projection(field_of_view=79.0, aspect_ratio=640/480, near_plane=0.01, far_plane=1000.0, field_of_view_type=camera.FovType.Horizontal)
 
     return renderer, cams2world
 
@@ -211,10 +222,10 @@ if __name__ == "__main__":
 
 #   for i in range(-5, 5):
 #         for j in range(-5, 5):
-#             renderer.scene.camera.look_at(
-#             center=[0, 0, 0],    # look at origin
-#             eye=[i, 0, j],       # camera position
-#             up=[0, -1, 0]         # up vector
-#             )    
-#             image = renderer.render_to_image()
-#             o3d.io.write_image(f"rendering_results/mesh_results/2rendered_image_mesh_newx_{i}_{j}.png", image)
+renderer.scene.camera.look_at(
+    center=lookat,    # look at origin
+    eye=position,       # camera position
+    up=up              # up vector
+    )    
+image = renderer.render_to_image()
+o3d.io.write_image(f"rendering_results/mesh_results/2rendered_image_mesh_newx_finally_fu.png", image)
