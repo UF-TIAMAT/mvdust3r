@@ -22,12 +22,9 @@ from dust3r.utils.device import to_numpy
 from dust3r.utils.image import load_images, rgb
 from dust3r.viz import add_scene_cam, CAM_COLORS, cat_meshes, OPENGL, pts3d_to_trimesh
 
-from gsplat.rendering import rasterization
-
 inf = np.inf
 
-def get_reconstructed_scene(model, device, silent, image_size, filelist, min_conf_thr,
-                            as_pointcloud, transparent_cams, cam_size, n_frame):
+def get_reconstructed_scene(model, device, silent, image_size, filelist, min_conf_thr, n_frame):
     """
     from a list of images, run dust3r inference, global aligner.
     then run get_3D_model_from_scene
@@ -53,158 +50,26 @@ def get_reconstructed_scene(model, device, silent, image_size, filelist, min_con
         change_id = (len(imgs) * 3) // 4 + 1
         imgs[3], imgs[change_id] = deepcopy(imgs[change_id]), deepcopy(imgs[3])
     
-    output = inference_mv(imgs, model, device, verbose=not silent)
-    # input('press enter to continue')
+    mvdust3r_output = inference_mv(imgs, model, device, verbose=not silent)
 
-    # print(output['pred1']['rgb'].shape, imgs[0]['img'].shape, 'aha')
-    output['pred1']['rgb'] = imgs[0]['img'].permute(0,2,3,1)
-    for x, img in zip(output['pred2s'], imgs[1:]):
+    mvdust3r_output['pred1']['rgb'] = imgs[0]['img'].permute(0,2,3,1)
+    for x, img in zip(mvdust3r_output['pred2s'], imgs[1:]):
         x['rgb'] = img['img'].permute(0,2,3,1)
 
-    output = get_3D_model_from_scene(outdir, silent, output, min_conf_thr, as_pointcloud, transparent_cams, cam_size)
-       
-    means = torch.stack(output['means'], 0).reshape(-1, 3).cuda()
-    quats = torch.stack(output['quats'], 0).reshape(-1, 4).cuda()
-    scales = torch.stack(output['scales'], 0).reshape(-1, 3).cuda()
-    opacities = torch.stack(output['opacities'], 0).reshape(-1).cuda()
-    colors = torch.stack(output['colors'], 0).flatten(0, -2).cuda()
-
-    sh_base = colors.shape[-1] // 3
-    colors = colors.reshape(-1, sh_base, 3)
-
-    viewmats = output["viewmats"].cuda()
-    intrinsics = output['intrinsics'].cuda()
-    intrinsics = intrinsics.repeat(viewmats.shape[0], 1, 1)  # Repeat intrinsics for each camera
-
-    n_cam = viewmats.shape[0]
-    
-    width = 640
-    height = 480
-    znear = 0.1
-    zfar = 1000.0
-    bg_color = torch.ones((1, 3)).repeat(n_cam, 1).to(device)  # Background color for rasterization
-    eps2d = 0.3
-    sh_base = colors.shape[-1]//3
-    sh_degree = int(np.sqrt(sh_base)) - 1
-    
-    # out_img, out_alpha, _ = rasterization(
-    #     means=means, 
-    #     quats=quats, 
-    #     scales=scales, 
-    #     opacities=opacities,
-    #     colors=colors,
-    #     viewmats=viewmats,
-    #     Ks=intrinsics,
-    #     width=width,
-    #     height=height,
-    #     near_plane=znear,
-    #     far_plane=zfar,
-    #     backgrounds=bg_color,
-    #     sh_degree=sh_degree,
-    #     eps2d=eps2d,
-    # )
-
-    # print("finished rasterization")
-    
-def _convert_scene_output_to_glb(outdir, imgs, pts3d, mask, focals, cams2world, cam_size=0.05,
-                                 cam_color=None, as_pointcloud=False,
-                                 transparent_cams=False, silent=False):
-    assert len(pts3d) == len(mask) <= len(imgs) <= len(cams2world) == len(focals)
-    pts3d = to_numpy(pts3d)
-    imgs = to_numpy(imgs)
-    focals = to_numpy(focals)
-    cams2world = to_numpy(cams2world)
-
-    scene = trimesh.Scene()
-
-    # full pointcloud
-    if as_pointcloud:
-        pts = np.concatenate([p[m] for p, m in zip(pts3d, mask)])
-        col = np.concatenate([p[m] for p, m in zip(imgs, mask)])
-        pct = trimesh.PointCloud(pts.reshape(-1, 3), colors=col.reshape(-1, 3))
-        scene.add_geometry(pct)
-    else:
-        meshes = []
-        for i in range(len(imgs)):
-            meshes.append(pts3d_to_trimesh(imgs[i], pts3d[i], mask[i]))
-        mesh = trimesh.Trimesh(**cat_meshes(meshes))
-        scene.add_geometry(mesh)
-
-        material = o3d.visualization.rendering.MaterialRecord()
-        material.shader = "defaultUnlit"  # or "defaultLit"
-        material.base_color = [1.0, 1.0, 1.0, 1.0]  # White base color
-        material.point_size = 3.0
-
-
-        faces_3 = np.zeros_like(mesh_properties['faces'])
-        vertices_3 = np.zeros((len(mesh_properties['faces']) * 3, 3), dtype=np.float32)
-
-        for index_face, face in enumerate(mesh_properties['faces']):
-            index_vertex = index_face * 3
-            vertices_3[index_vertex] = mesh_properties['vertices'][face[0]]
-            vertices_3[index_vertex + 1] = mesh_properties['vertices'][face[1]]
-            vertices_3[index_vertex + 2] = mesh_properties['vertices'][face[2]]
-            faces_3[index_face] = np.arange(index_vertex, index_vertex + 3)
-
-        mesh = o3d.geometry.TriangleMesh()
-        mesh.vertices = o3d.utility.Vector3dVector(vertices_3)
-        mesh.triangles = o3d.utility.Vector3iVector(faces_3)
-
-        colors = np.repeat(mesh_properties['face_colors'], 3, axis=0)
-
-        mesh.vertex_colors = o3d.utility.Vector3dVector(colors)
-
-        material = o3d.visualization.rendering.MaterialRecord()
-        material.shader = "defaultUnlit"  # or "defaultLit"
-        material.base_color = [1.0, 1.0, 1.0, 1.0]  # White base color
-
-        # Dummy point
-        renderer = o3d.visualization.rendering.OffscreenRenderer(800, 600)
-        renderer.scene.add_geometry("mesh", mesh, material)
-        camera = renderer.scene.camera
-        camera.set_projection(field_of_view=79.0, aspect_ratio=800/600, near_plane=0.01, far_plane=1000.0, field_of_view_type=camera.FovType.Horizontal)
-
-        # camera.look_at(
-        #     center=[0, 0, 0],    # look at origin
-        #     eye=[-1, 0, -1],       # camera position
-        #     up=[0, 1, 0]         # up vector
-        # )    
-
-        # image = renderer.render_to_image()
-        # o3d.io.write_image("rendered_image_mesh_new.png", image)
-
-
-    # for i in range(-5, 5):
-    #     for j in range(-5, 5):
-    #         camera.look_at(
-    #         center=[0, 0, 0],    # look at origin
-    #         eye=[i, 0, j],       # camera position
-    #         up=[0, 1, 0]         # up vector
-    #     )    
-    #         image = renderer.render_to_image()
-    #         o3d.io.write_image(f"rendering_results/mesh_results/rendered_image_mesh_new_{i}_{j}.png", image)
-        
-    # add each camera
-    for i, pose_c2w in enumerate(cams2world):
-        if isinstance(cam_color, list):
-            camera_edge_color = cam_color[i]
-        else:
-            camera_edge_color = cam_color or CAM_COLORS[i % len(CAM_COLORS)]
-        add_scene_cam(scene, pose_c2w, camera_edge_color,
-                    None if transparent_cams else imgs[i], focals[i],
-                    imsize=imgs[i].shape[1::-1], screen_width=cam_size)
+    renderer, cams2world = get_rendering_from_scene(mvdust3r_output, min_conf_thr=min_conf_thr)
 
 
     rot = np.eye(4)
     rot[:3, :3] = Rotation.from_euler('y', np.deg2rad(180)).as_matrix()
-    scene.apply_transform(np.linalg.inv(cams2world[0] @ OPENGL @ rot))
-    outfile = os.path.join(outdir, 'scene.glb')
-    if not silent:
-        print('(exporting 3D scene to', outfile, ')')
-    scene.export(file_obj=outfile)
-    return outfile
+    camera_matrix = np.linalg.inv(cams2world[0] @ OPENGL @ rot)
 
-def get_3D_model_from_scene(outdir, silent, output, min_conf_thr=3, as_pointcloud=False, transparent_cams=False, cam_size=0.05, only_model=False):
+
+
+
+    print()
+
+
+def get_rendering_from_scene(output, min_conf_thr=3):
     """
     extract 3D_model (glb file) from a reconstructed scene
     """
@@ -255,30 +120,52 @@ def get_3D_model_from_scene(outdir, silent, output, min_conf_thr=3, as_pointclou
         pts3d = to_numpy(pts3d)
         msk = to_numpy(msk)
 
-    glb_file = _convert_scene_output_to_glb(outdir, rgbimg, pts3d, msk, focals, cams2world, as_pointcloud=as_pointcloud, transparent_cams=transparent_cams, cam_size=cam_size, silent=silent)
-    conf = to_numpy([x[0] for x in conf.split(1, dim=0)])
-    rgbimg = to_numpy(rgbimg)
+        assert len(pts3d) == len(msk) <= len(rgbimg) <= len(cams2world) == len(focals)
+        pts3d = to_numpy(pts3d)
+        imgs = to_numpy(rgbimg)
+        focals = to_numpy(focals)
+        cams2world = to_numpy(cams2world)
 
-    means = [output['pred1']['pts3d'][0]] + [x['pts3d_in_other_view'][0] for x in output['pred2s']]
-    quats = [output['pred1']['rotation'][0]] + [x['rotation'][0] for x in output['pred2s']]
-    scales = [output['pred1']['scale'][0]] + [x['scale'][0] for x in output['pred2s']]
-    opacities = [output['pred1']['opacity'][0]] + [x['opacity'][0] for x in output['pred2s']]
-    colors = [output['pred1']['rgb'][0]] + [x['rgb'][0] for x in output['pred2s']]
+        meshes = []
+        for i in range(len(imgs)):
+            meshes.append(pts3d_to_trimesh(imgs[i], pts3d[i], msk[i]))
+        mesh = cat_meshes(meshes)
 
-    output = {}
-    output['means'] = means
-    output['quats'] = quats
-    output['scales'] = scales
-    output['opacities'] = opacities
-    output['colors'] = colors
-    output['viewmats'] = cams2world
-    output['intrinsics'] = intrinsics   
+        material = o3d.visualization.rendering.MaterialRecord()
+        material.shader = "defaultUnlit"  # or "defaultLit"
+        material.base_color = [1.0, 1.0, 1.0, 1.0]  # White base color
+        material.point_size = 3.0
 
-    # if only_model:
-    #     return glb_file
-    # return glb_file, rgbimg, conf, cams2world 
 
-    return output
+        faces_3 = np.zeros_like(mesh['faces'])
+        vertices_3 = np.zeros((len(mesh['faces']) * 3, 3), dtype=np.float32)
+
+        for index_face, face in enumerate(mesh['faces']):
+            index_vertex = index_face * 3
+            vertices_3[index_vertex] = mesh['vertices'][face[0]]
+            vertices_3[index_vertex + 1] = mesh['vertices'][face[1]]
+            vertices_3[index_vertex + 2] = mesh['vertices'][face[2]]
+            faces_3[index_face] = np.arange(index_vertex, index_vertex + 3)
+
+        colors = np.repeat(mesh['face_colors'], 3, axis=0)
+        
+        mesh = o3d.geometry.TriangleMesh()
+        mesh.vertices = o3d.utility.Vector3dVector(vertices_3)
+        mesh.triangles = o3d.utility.Vector3iVector(faces_3)
+        mesh.vertex_colors = o3d.utility.Vector3dVector(colors)
+
+        material = o3d.visualization.rendering.MaterialRecord()
+        material.shader = "defaultUnlit"  # or "defaultLit"
+        material.base_color = [1.0, 1.0, 1.0, 1.0]  # White base color
+
+
+        renderer = o3d.visualization.rendering.OffscreenRenderer(640, 480)
+        renderer.scene.add_geometry("mesh", mesh, material)
+        camera = renderer.scene.camera
+        camera.set_projection(field_of_view=79.0, aspect_ratio=640/480, near_plane=0.01, far_plane=1000.0, field_of_view_type=camera.FovType.Vertical)
+
+    return renderer, cams2world
+
 
 if __name__ == "__main__":
 
@@ -318,42 +205,16 @@ if __name__ == "__main__":
         image_size=224,  # This should 224 always.
         filelist=filelist,  # Replace with your image paths
         min_conf_thr=0.5,
-        as_pointcloud=False,
-        transparent_cams=True,
-        cam_size=0.05,
         n_frame=2
     )
 
 
-def estimate_similarity_transformation(source: np.ndarray, target: np.ndarray) -> np.ndarray:
-    """
-    Estimate similarity transformation (rotation, scale, translation) from source to target (such as the Sim3 group).
-    """
-    k, n = source.shape
-
-    mx = source.mean(axis=1)
-    my = target.mean(axis=1)
-    source_centered = source - np.tile(mx, (n, 1)).T
-    target_centered = target - np.tile(my, (n, 1)).T
-
-    sx = np.mean(np.sum(source_centered**2, axis=0))
-    sy = np.mean(np.sum(target_centered**2, axis=0))
-
-    Sxy = (target_centered @ source_centered.T) / n
-
-    U, D, Vt = np.linalg.svd(Sxy, full_matrices=True, compute_uv=True)
-    V = Vt.T
-    rank = np.linalg.matrix_rank(Sxy)
-    if rank < k:
-        raise ValueError("Failed to estimate similarity transformation")
-
-    S = np.eye(k)
-    if np.linalg.det(Sxy) < 0:
-        S[k - 1, k - 1] = -1
-
-    R = U @ S @ V.T
-
-    s = np.trace(np.diag(D) @ S) / sx
-    t = my - s * (R @ mx)
-
-    return R, s, t
+#   for i in range(-5, 5):
+#         for j in range(-5, 5):
+#             renderer.scene.camera.look_at(
+#             center=[0, 0, 0],    # look at origin
+#             eye=[i, 0, j],       # camera position
+#             up=[0, -1, 0]         # up vector
+#             )    
+#             image = renderer.render_to_image()
+#             o3d.io.write_image(f"rendering_results/mesh_results/2rendered_image_mesh_newx_{i}_{j}.png", image)
