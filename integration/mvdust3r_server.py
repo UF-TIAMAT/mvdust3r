@@ -371,23 +371,23 @@ class MVDust3RModel:
 
         renderer, cams2world = self._get_rendering_from_scene(mvdust3r_output, min_conf_thr=min_conf_thr)
 
-        initial = np.eye(4, dtype=np.float32)
+        # initial = np.eye(4, dtype=np.float32)
 
         # + Z is the forward
         # - Y is the up
         # 180 degree rotation around X or Y axis?? 
 
-        center = np.array([0, 0, 1], dtype=np.float32)
-        eye = np.array([0, 0, 0], dtype=np.float32)
-        up = np.array([0, -1, 0], dtype=np.float32)
+        # center = np.array([0, 0, 1], dtype=np.float32)
+        # eye = np.array([0, 0, 0], dtype=np.float32)
+        # up = np.array([0, -1, 0], dtype=np.float32)
 
-        renderer.scene.camera.look_at(
-            center=center,    # look at origin
-            eye=eye,       # camera position
-            up=up              # up vector
-            )    
-        image = renderer.render_to_image()
-        o3d.io.write_image(f"/blue/prabhat/duminduaelamurem/wd/repo_tests/aaai/mvdust3r/rendering_results/server/{len(img_arr)}.png", image)
+        # renderer.scene.camera.look_at(
+        #     center=center,    # look at origin
+        #     eye=eye,       # camera position
+        #     up=up              # up vector
+        #     )    
+        # image = renderer.render_to_image()
+        # o3d.io.write_image(f"/blue/prabhat/duminduaelamurem/wd/repo_tests/aaai/mvdust3r/rendering_results/server/{len(img_arr)}_+45.png", image)
 
         return renderer, cams2world
 
@@ -408,6 +408,34 @@ class MVDust3RModel:
             img_arr=input_img_arr,
             min_conf_thr=0.5
         )
+
+        rot = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)
+
+        world_2_world_transform = np.eye(4, dtype=np.float32)
+        world_2_world_transform[3, :3] = rot @ input_camera_matrix[0][:3, 3]  # Set the translation part
+        world_2_world_transform[:3, :3] = rot @ input_camera_matrix[0][:3, :3]  # Set the rotation part
+
+        for i, target_transform in enumerate(target_camera_matrix):
+            transformed_camera_matrix = world_2_world_transform @ target_transform
+
+            # Apply the transformation to the camera
+            renderer.scene.camera.set_projection(
+                field_of_view=79.0, 
+                aspect_ratio=640/480, 
+                near_plane=0.01, 
+                far_plane=1000.0, 
+                field_of_view_type=renderer.scene.camera.FovType.Horizontal
+            )
+            renderer.scene.camera.look_at(
+                center=transformed_camera_matrix[:3, 3] + transformed_camera_matrix[:3, 2],  # look at the camera position
+                eye=transformed_camera_matrix[:3, 3] ,  # camera position
+                up=transformed_camera_matrix[:3, 1]  # up vector
+            )
+
+            image = renderer.render_to_image()
+            o3d.io.write_image(f"/blue/prabhat/duminduaelamurem/wd/repo_tests/aaai/mvdust3r/rendering_results/server/target_{len(input_img_arr)}.png", image)
+
+        
         return {"response": f"Num Cams: {len(cams2world)}"}
 
 class MVDust3RModelClient:
