@@ -390,7 +390,7 @@ class MVDust3RModel:
             img_arr=input_img_arr,
             min_conf_thr=0.5
         )
-        return {"response": "Novel views generated successfully."}
+        return {"response": f"Num Cams: {len(cams2world)}"}
 
 class MVDust3RModelClient:
     def __init__(self, port: int = 12400):
@@ -416,8 +416,7 @@ if __name__ == "__main__":
         def process_payload(self, payload: dict) -> dict:
             print(f"MVDust3RModelServer.process_payload:")
             response = self.generate_novel_views(payload=payload)
-            # For test
-            return {"response": np.array([1, 2, 3])}
+            return response
 
 
     mv3dust3r = MVDust3RModelServer(weights_path=args.weights_path)
