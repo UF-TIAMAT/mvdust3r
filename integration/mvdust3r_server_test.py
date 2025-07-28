@@ -4,7 +4,7 @@ import json
 import numpy as np
 from PIL import Image
 
-with open("/blue/prabhat/duminduaelamurem/wd/repo_tests/aaai/LVSM/data/habitat_eval/metadata/abcdefg123.json", "r") as f:
+with open("/blue/prabhat/duminduaelamurem/wd/repo_tests/aaai/mvdust3r/data_out/data_test/metadata/abcdefg.json", "r") as f:
     dataset = json.load(f)
 
 dataset = dataset["frames"]

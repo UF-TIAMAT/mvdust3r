@@ -52,7 +52,7 @@ def host_model(model: Any, name: str, port: int = 5000) -> None:
 
         return Response(response, content_type="application/octet-stream")
 
-    app.run(host="localhost", port=port, debug=True)
+    app.run(host="localhost", port=port, debug=False)
 
 def send_request(url: str, payload: Any) -> dict:
     response = {}
@@ -370,6 +370,24 @@ class MVDust3RModel:
             x['rgb'] = img['img'].permute(0,2,3,1)
 
         renderer, cams2world = self._get_rendering_from_scene(mvdust3r_output, min_conf_thr=min_conf_thr)
+
+        initial = np.eye(4, dtype=np.float32)
+
+        # + Z is the forward
+        # - Y is the up
+        # 180 degree rotation around X or Y axis?? 
+
+        center = np.array([0, 0, 1], dtype=np.float32)
+        eye = np.array([0, 0, 0], dtype=np.float32)
+        up = np.array([0, -1, 0], dtype=np.float32)
+
+        renderer.scene.camera.look_at(
+            center=center,    # look at origin
+            eye=eye,       # camera position
+            up=up              # up vector
+            )    
+        image = renderer.render_to_image()
+        o3d.io.write_image(f"/blue/prabhat/duminduaelamurem/wd/repo_tests/aaai/mvdust3r/rendering_results/server/{len(img_arr)}.png", image)
 
         return renderer, cams2world
 
