@@ -23,20 +23,20 @@ for frame in dataset:
     w2cs.append(w2c_np)
 
 
-with open("/blue/prabhat/duminduaelamurem/wd/repo_tests/aaai/vlfm/results/06-27/pickles/rgb_cache.pkl", "rb") as f:
-    rgb_cache = pickle.load(f)
+# with open("/blue/prabhat/duminduaelamurem/wd/repo_tests/aaai/vlfm/results/06-27/pickles/rgb_cache.pkl", "rb") as f:
+#     rgb_cache = pickle.load(f)
 
-with open("/blue/prabhat/duminduaelamurem/wd/repo_tests/aaai/vlfm/results/06-27/pickles/transformation_matrix.pkl", "rb") as f:
-    transformation_matrix = pickle.load(f)  
+# with open("/blue/prabhat/duminduaelamurem/wd/repo_tests/aaai/vlfm/results/06-27/pickles/transformation_matrix.pkl", "rb") as f:
+#     transformation_matrix = pickle.load(f)  
 
 
-payload = {"rgb_cache": rgb_cache, "transformation_matrix": rgb_cache["transforms"]}
-payload = pickle.dumps(payload)
+# payload = {"rgb_cache": rgb_cache, "transformation_matrix": rgb_cache["transforms"]}
+# payload = pickle.dumps(payload)
 
 # Uncomment this when doing server testing. 
 client = MVDust3RModelClient()
 
-for i in range(4, 6):
+for i in range(8, 12):
 
     rgb_cache = {}
     rgb_cache["images"] = images[:i]  # Taking one image at a time

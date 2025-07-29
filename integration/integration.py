@@ -21,34 +21,53 @@ from dust3r.utils.device import to_numpy
 
 from dust3r.utils.image import load_images, rgb
 from dust3r.viz import add_scene_cam, CAM_COLORS, cat_meshes, OPENGL, pts3d_to_trimesh
+import random
+import shutil
 
 inf = np.inf
 
-def get_reconstructed_scene(model, device, silent, image_size, filelist, min_conf_thr, n_frame):
+def get_reconstructed_scene(model, device, silent, image_size, filelist, min_conf_thr, n_frame, out_dir):
     """
     from a list of images, run dust3r inference, global aligner.
     then run get_3D_model_from_scene
     """
-
+    img_ids = []
     imgs = load_images(filelist, size=image_size, verbose=not silent, n_frame = n_frame)
     if len(imgs) == 1:
         imgs = [imgs[0], copy.deepcopy(imgs[0])]
         imgs[1]['idx'] = 1
+        img_ids = [0, 0]
+
     for img in imgs:
         img['true_shape'] = torch.from_numpy(img['true_shape']).long()
 
+
     if len(imgs) < 12:
+
+        img_ids = [i for i in range(len(imgs))]
+
         if len(imgs) > 3:
             imgs[1], imgs[3] = deepcopy(imgs[3]), deepcopy(imgs[1])
+            img_ids[3], img_ids[1] = img_ids[1], img_ids[3]
+
         if len(imgs) > 6:
             imgs[2], imgs[6] = deepcopy(imgs[6]), deepcopy(imgs[2])
+            img_ids[6], img_ids[2] = img_ids[2], img_ids[6]
     else:
+        img_ids = [i for i in range(len(imgs))]
         change_id = len(imgs) // 4 + 1
         imgs[1], imgs[change_id] = deepcopy(imgs[change_id]), deepcopy(imgs[1])
+        img_ids[1], img_ids[change_id] = img_ids[change_id], img_ids[1]
+
         change_id = (len(imgs) * 2) // 4 + 1
         imgs[2], imgs[change_id] = deepcopy(imgs[change_id]), deepcopy(imgs[2])
+        img_ids[2], img_ids[change_id] = img_ids[change_id], img_ids[2]
+
         change_id = (len(imgs) * 3) // 4 + 1
         imgs[3], imgs[change_id] = deepcopy(imgs[change_id]), deepcopy(imgs[3])
+        img_ids[3], img_ids[change_id] = img_ids[change_id], img_ids[3]
+
+    print(len(imgs), "images loaded for inference")
     
     mvdust3r_output = inference_mv(imgs, model, device, verbose=not silent)
 
@@ -59,25 +78,27 @@ def get_reconstructed_scene(model, device, silent, image_size, filelist, min_con
     renderer, cams2world = get_rendering_from_scene(mvdust3r_output, min_conf_thr=min_conf_thr)
 
 
-    for i, cam in enumerate(cams2world):
-        rot = np.eye(4)
-        rot[:3, :3] = Rotation.from_euler('y', np.deg2rad(180)).as_matrix()
-        camera_matrix = np.linalg.inv(cams2world[i] @ OPENGL @ rot)
+    return renderer, cams2world
 
-        position = camera_matrix[:3, 3]
-        forward = camera_matrix[:3, 2]
-        up = camera_matrix[:3, 1]
-        lookat = position + forward
+    # out_dir = "/blue/prabhat/duminduaelamurem/wd/repo_tests/aaai/mvdust3r/rendering_results/axis_rotation/"
+    # for i, cam in enumerate(cams2world):
+    #     rot = np.eye(4)
+    #     rot[:3, :3] = Rotation.from_euler('y', np.deg2rad(180)).as_matrix()
+    #     camera_matrix = np.linalg.inv(cams2world[i] @ OPENGL @ rot)
 
-        renderer.scene.camera.look_at(
-            center=lookat,    # look at origin
-            eye=position,       # camera position
-            up=up              # up vector
-            )    
-        image = renderer.render_to_image()
-        o3d.io.write_image(f"rendering_results/mesh_results/cam_{i}_hori_rendered_image_mesh_newx_finally_fu.png", image)
+    #     position = camera_matrix[:3, 3]
+    #     forward = camera_matrix[:3, 2]
+    #     up = camera_matrix[:3, 1]
+    #     lookat = position + forward
 
-    print()
+    #     renderer.scene.camera.look_at(
+    #         center=lookat,    # look at origin
+    #         eye=position,       # camera position
+    #         up=up              # up vector
+    #         )    
+    #     image = renderer.render_to_image()
+    #     o3d.io.write_image(f"{out_dir}/generate_{i}.png", image)
+
 
 
 def get_rendering_from_scene(output, min_conf_thr=3):
@@ -115,7 +136,6 @@ def get_rendering_from_scene(output, min_conf_thr=3):
         intrinsics = intrinsics.cuda()
 
         focals = torch.Tensor([focals]).reshape(1,).repeat(len(rgbimg))
-
         
         y_coords, x_coords = torch.meshgrid(torch.arange(h), torch.arange(w), indexing='ij')
         pixel_coords = torch.stack([x_coords, y_coords], dim=-1).float().cuda() # [H, W, 2]
@@ -204,28 +224,40 @@ if __name__ == "__main__":
         model.load_state_dict(state_dict_loaded, strict=True)
     
 
-    # NOTE: filelist to debug
-    filelist = ["data_test/path_images/00000.png", "data_test/path_images/00001.png", "data_test/path_images/00002.png"]  # Replace with your image paths
 
-    print("Reached the end")
+    for i in range(0, 39, 5):
+        end = min(i + 5, 39)
 
-    get_reconstructed_scene(
-        model=model,
-        device=device,
-        silent=False,
-        image_size=224,  # This should 224 always.
-        filelist=filelist,  # Replace with your image paths
-        min_conf_thr=0.5,
-        n_frame=2
-    )
+        num_samples = random.randint(2, 5)
+        image_ids = random.choices(range(i, end), k=num_samples)
+
+        filelist = [f"data_test/path_images/{str(image_id).zfill(5)}.png" for image_id in image_ids]
+
+        out_dir = f"/blue/prabhat/duminduaelamurem/wd/repo_tests/aaai/mvdust3r/rendering_results/mesh_results/output/{i}"
+        os.makedirs(out_dir, exist_ok=True)
+
+        for file in filelist:
+            shutil.copy2(file, out_dir)
+
+        get_reconstructed_scene(
+            model=model,
+            device=device,
+            silent=False,
+            image_size=224,  # This should 224 always.
+            filelist=filelist,  # Replace with your image paths
+            min_conf_thr=0.5,
+            n_frame=2, 
+            out_dir=out_dir
+        )
 
 
-#   for i in range(-5, 5):
-#         for j in range(-5, 5):
-renderer.scene.camera.look_at(
-    center=lookat,    # look at origin
-    eye=position,       # camera position
-    up=up              # up vector
-    )    
-image = renderer.render_to_image()
-o3d.io.write_image(f"rendering_results/mesh_results/2rendered_image_mesh_newx_finally_fu.png", image)
+
+# #   for i in range(-5, 5):
+# #         for j in range(-5, 5):
+# renderer.scene.camera.look_at(
+#     center=lookat,    # look at origin
+#     eye=position,       # camera position
+#     up=up              # up vector
+#     )    
+# image = renderer.render_to_image()
+# o3d.io.write_image(f"rendering_results/mesh_results/2rendered_image_mesh_newx_finally_fu.png", image)

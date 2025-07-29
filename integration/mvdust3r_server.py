@@ -18,6 +18,8 @@ import torchvision.transforms as tvf
 import copy
 from copy import deepcopy
 import open3d as o3d
+from scipy.spatial.transform import Rotation
+
 
 import matplotlib.pyplot as pl
 from dust3r.inference import inference, inference_mv
@@ -27,6 +29,8 @@ from dust3r.utils.device import to_numpy
 
 from dust3r.utils.image import load_images, rgb
 from dust3r.viz import add_scene_cam, CAM_COLORS, cat_meshes, OPENGL, pts3d_to_trimesh
+
+from similarity_transform import kabsch_umeyama
 
 inf = np.inf
 ImgNorm = tvf.Compose([tvf.ToTensor(), tvf.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
@@ -341,25 +345,36 @@ class MVDust3RModel:
         then run get_3D_model_from_scene
         """
 
+        img_ids = []
         imgs = self._load_images(img_arr=img_arr, size=image_size, verbose=not silent)
         if len(imgs) == 1:
             imgs = [imgs[0], copy.deepcopy(imgs[0])]
             imgs[1]['idx'] = 1
+            img_ids = [0, 0]
         for img in imgs:
             img['true_shape'] = torch.from_numpy(img['true_shape']).long()
 
         if len(imgs) < 12:
+            img_ids = [i for i in range(len(imgs))]
             if len(imgs) > 3:
                 imgs[1], imgs[3] = deepcopy(imgs[3]), deepcopy(imgs[1])
+                img_ids[1], img_ids[3] = img_ids[3], img_ids[1]
             if len(imgs) > 6:
                 imgs[2], imgs[6] = deepcopy(imgs[6]), deepcopy(imgs[2])
+                img_ids[2], img_ids[6] = img_ids[6], img_ids[2]
         else:
+            img_ids = [i for i in range(len(imgs))]
             change_id = len(imgs) // 4 + 1
             imgs[1], imgs[change_id] = deepcopy(imgs[change_id]), deepcopy(imgs[1])
+            img_ids[1], img_ids[change_id] = img_ids[change_id], img_ids[1]
+
             change_id = (len(imgs) * 2) // 4 + 1
             imgs[2], imgs[change_id] = deepcopy(imgs[change_id]), deepcopy(imgs[2])
+            img_ids[2], img_ids[change_id] = img_ids[change_id], img_ids[2]
+
             change_id = (len(imgs) * 3) // 4 + 1
             imgs[3], imgs[change_id] = deepcopy(imgs[change_id]), deepcopy(imgs[3])
+            img_ids[3], img_ids[change_id] = img_ids[change_id], img_ids[3]
 
         print(len(imgs), "images loaded for inference")
         
@@ -371,6 +386,8 @@ class MVDust3RModel:
 
         renderer, cams2world = self._get_rendering_from_scene(mvdust3r_output, min_conf_thr=min_conf_thr)
 
+        
+
         # initial = np.eye(4, dtype=np.float32)
 
         # + Z is the forward
@@ -379,6 +396,7 @@ class MVDust3RModel:
 
         # center = np.array([0, 0, 1], dtype=np.float32)
         # eye = np.array([0, 0, 0], dtype=np.float32)
+        # NOTE: important. (0, -1, 0) is the up vector in OpenGL
         # up = np.array([0, -1, 0], dtype=np.float32)
 
         # renderer.scene.camera.look_at(
@@ -389,7 +407,7 @@ class MVDust3RModel:
         # image = renderer.render_to_image()
         # o3d.io.write_image(f"/blue/prabhat/duminduaelamurem/wd/repo_tests/aaai/mvdust3r/rendering_results/server/{len(img_arr)}_+45.png", image)
 
-        return renderer, cams2world
+        return renderer, cams2world, img_ids 
 
 
     def generate_novel_views(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -400,7 +418,7 @@ class MVDust3RModel:
         target_camera_matrix = payload["transformation_matrix"]
 
 
-        renderer, cams2world = self.get_reconstructed_scene(
+        renderer, cams2world, img_ids = self.get_reconstructed_scene(
             model=self.model,
             device=self.device,
             silent=True,
@@ -409,14 +427,71 @@ class MVDust3RModel:
             min_conf_thr=0.5
         )
 
-        rot = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)
+        # input_translations = []
+        # output_translations = []
 
-        world_2_world_transform = np.eye(4, dtype=np.float32)
-        world_2_world_transform[3, :3] = rot @ input_camera_matrix[0][:3, 3]  # Set the translation part
-        world_2_world_transform[:3, :3] = rot @ input_camera_matrix[0][:3, :3]  # Set the rotation part
+        # for i, img in enumerate(input_camera_matrix):
+        #     input_translations.append(img[:3, 3])
+        #     output_translations.append(cams2world[img_ids.index(i)][:3, 3])
+
+        # R, s, t = kabsch_umeyama(np.array(input_translations[-1]), np.array(output_translations[-1]))
+
+
+        # rot = np.array([[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]], dtype=np.float32)
+        # world_2_world_transform = np.linalg.inv(input_camera_matrix[0])
+        # rot = np.eye(4)
+        # rot[:3, :3] = Rotation.from_euler('y', np.deg2rad(180)).as_matrix()
+
+        # flip = np.array([[1, 0, 0, 0], [0, 0, 1, 0], [0, -1, 0, 0], [0, 0, 0, 1]], dtype=np.float32)
+
+        # flip_y_and_z = np.zeros((4, 4), dtype=np.float32)
+        # flip_y_and_z[0, 0] = 1
+        # flip_y_and_z[1, 2] = 1
+        # flip_y_and_z[2, 1] = 1
+        # flip_y_and_z[3, 3] = 1
+
+        # transformed_camera_matrix = world_2_world_transform @ target_transform
+
+        # f.write(f"Target camera {i}:\n")
+        # f.write(f"World2World_transform: {world_2_world_transform}\n")
+        # f.write(f"Target transform:{target_transform}\n")
+        # f.write(f"Transformed Camera Matrix: {transformed_camera_matrix}\n")
+        # # f.write(f"Rotation:\n{rot}\n")
+        # f.write(f"OPENGL:\n{OPENGL}\n")
+        # f.write(f"UP: {transformed_camera_matrix[:3, 1]}\n")
+        # f.write(f"LOOK AT: {transformed_camera_matrix[:3, 3]}\n")
+        # f.write(f"CAMERA POSITION: {transformed_camera_matrix[:3, 3] + transformed_camera_matrix[:3, 2]}\n")
+        # f.write("\n")
+
+        # rendered_imgs = []
+        # with open("/blue/prabhat/duminduaelamurem/wd/repo_tests/aaai/mvdust3r/rendering_results/axis_rotation/debug/matrixes.txt", "w") as f:
+
+        r_0 = Rotation.from_matrix(input_camera_matrix[0][:3, :3])
+        reference_yaw, reference_pitch, reference_roll = r_0.as_euler('zxy')
+        reference_position = input_camera_matrix[0][:3, 3]
+        rendered_imgs = []  
+
+        # with open("/blue/prabhat/duminduaelamurem/wd/repo_tests/aaai/mvdust3r/rendering_results/axis_rotation/debug.log", "w") as f: 
 
         for i, target_transform in enumerate(target_camera_matrix):
-            transformed_camera_matrix = world_2_world_transform @ target_transform
+            
+            # f.write(f"Target camera {i}:\n")
+            # f.write(f"Target transform: {target_transform}\n")
+
+            r = Rotation.from_matrix(target_transform[:3, :3])
+            yaw, pitch, roll = r.as_euler('zxy')
+
+            # f.write(f"Yaw, Pitch, Roll: {yaw}, {pitch}, {roll}\n")
+
+            yaw_diff = yaw - reference_yaw
+            forward = np.array([np.cos(yaw_diff + np.pi/2), 0, np.sin(yaw_diff + np.pi/2)], dtype=np.float32)
+
+            # f.write(f"Yaw-diff-forward: {yaw}, {yaw_diff}, {forward}\n")
+
+            position = target_transform[:3, 3] - reference_position
+            position[1], position[2] = position [2], position[1]  # Swap Y and Z for OpenGL
+
+            # f.write(f"Position: {position}\n")
 
             # Apply the transformation to the camera
             renderer.scene.camera.set_projection(
@@ -427,16 +502,17 @@ class MVDust3RModel:
                 field_of_view_type=renderer.scene.camera.FovType.Horizontal
             )
             renderer.scene.camera.look_at(
-                center=transformed_camera_matrix[:3, 3] + transformed_camera_matrix[:3, 2],  # look at the camera position
-                eye=transformed_camera_matrix[:3, 3] ,  # camera position
-                up=transformed_camera_matrix[:3, 1]  # up vector
+                center=position + forward,  # look at the camera position
+                eye=position ,  # camera position
+                up=[0, -1, 0]  # up vector
             )
+            
 
             image = renderer.render_to_image()
-            o3d.io.write_image(f"/blue/prabhat/duminduaelamurem/wd/repo_tests/aaai/mvdust3r/rendering_results/server/target_{len(input_img_arr)}.png", image)
+            o3d.io.write_image(f"/blue/prabhat/duminduaelamurem/wd/repo_tests/aaai/mvdust3r/rendering_results/axis_rotation/debug_2/target_{len(input_img_arr)}_{i}.png", image)
+            rendered_imgs.append(np.asarray(image))
 
-        
-        return {"response": f"Num Cams: {len(cams2world)}"}
+        return {"response": rendered_imgs}
 
 class MVDust3RModelClient:
     def __init__(self, port: int = 12400):
