@@ -324,6 +324,10 @@ class MVDust3RModel:
             mesh.triangles = o3d.utility.Vector3iVector(faces_3)
             mesh.vertex_colors = o3d.utility.Vector3dVector(colors)
 
+            current_time = time.strftime("%d-%H%M%S")
+            save_path = f"/blue/prabhat/duminduaelamurem/wd/repo_tests/aaai/mvdust3r/rendering_results/mesh/{current_time}.ply"
+            o3d.io.write_triangle_mesh(save_path, mesh)
+
             material = o3d.visualization.rendering.MaterialRecord()
             material.shader = "defaultUnlit"  # or "defaultLit"
             material.base_color = [1.0, 1.0, 1.0, 1.0]  # White base color
